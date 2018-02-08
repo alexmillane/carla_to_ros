@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>carla_to_ros</name>
+  <version>1.0.0</version>
+  <description>
+    Generates ros messages from carla output.
+  </description>
+
+  <author email="alex.millane@gmail.com">Alex Millane</author>
+  <maintainer email="alex.millane@gmail.com">Alex Millane</maintainer>
+
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>opencv</depend>
+
+</package>
