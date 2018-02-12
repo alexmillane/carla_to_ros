@@ -122,7 +122,7 @@ class Timer(object):
 
 
 class CarlaGame(object):
-    def __init__(self, carla_client, city_name=None, data_callback=None):
+    def __init__(self, carla_client, city_name=None):
         self.client = carla_client
         self._timer = None
         self._display = None
@@ -137,6 +137,10 @@ class CarlaGame(object):
         self._map_view = self._map.get_map(WINDOW_HEIGHT) if city_name is not None else None
         self._position = None
         self._agent_positions = None
+        self._data_callback = None
+        self._quit_flag = False
+
+    def set_data_callback(self, data_callback):
         self._data_callback = data_callback
 
     def execute(self):
@@ -148,10 +152,15 @@ class CarlaGame(object):
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         return
+                if self._quit_flag == True:
+                    return
                 self._on_loop()
                 self._on_render()
         finally:
             pygame.quit()
+
+    def stop(self):
+        self._quit_flag = True
 
     def _initialize_game(self):
         if self._city_name is not None:
