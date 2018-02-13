@@ -9,11 +9,15 @@ from os.path import expanduser
 # Numpy and OpenCV
 import cv2
 import numpy as np
+from numpy.matlib import repmat
 
 # ROS stuff.
 import rospy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import TransformStamped
+from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import Header
+import sensor_msgs.point_cloud2 as pc2
 from tf.msg import tfMessage
 from cv_bridge import CvBridge
 import tf
@@ -30,6 +34,9 @@ from carla import image_converter  # Only for debug
 
 # Importing the interactive game
 from carla_interaction import CarlaGame
+
+# Client wide types and constants
+from common import *
 
 
 class CarlaToRos(object):
@@ -54,17 +61,18 @@ class CarlaToRos(object):
         # A flag for the first measurement
         self._first_position_flag = True
         self._first_position = np.array([0.0, 0.0, 0.0])
-
-        # Get parameters
-        #self.enable = rospy.get_param('~enable', True)
-        #self.int_a = rospy.get_param('~a', 1)
-        #self.int_b = rospy.get_param('~b', 2)
-        #self.message = rospy.get_param('~message', 'hello')
-
-        # if self.enable:
-        #     self.start()
-        # else:
-        #     self.stop()
+        # The camera intrinsic matrix
+        # TODO(alex.millane): The constants should be passed around as arguments
+        self._image_width = image_width
+        self._image_height = image_height
+        self._image_fov = image_fov
+        self._K = self._get_camera_intrinsic_matrix()
+        self._K_inv = np.linalg.inv(self._K)
+        # The camera positions
+        # TODO(alex.millane): The constants should be passed around as arguments
+        self._camera_position_x = camera_position_x
+        self._camera_position_y = camera_position_y
+        self._camera_position_z = camera_position_z
 
     def data_callback(self, measurements, sensor_data):
         print "In data_callback"
@@ -79,6 +87,7 @@ class CarlaToRos(object):
         image_msg = self._get_image_msg(sensor_data['CameraRGB'])
         depth_msg = self._get_depth_msg(sensor_data['CameraDepth'])
         transform_msg = self._get_transform_message(measurements)
+        static_transform_msg = self._get_static_transform_message()
         #rotator_msg = self._get_rotator_message(measurements)
 
         # Zeroing the position to be relative to the first frame
@@ -87,13 +96,18 @@ class CarlaToRos(object):
             transform_msg = self._remove_position_offset(transform_msg)
 
         # Making the tf message
-        tf_msg = self._get_tf_message(transform_msg)
+        tf_msg = self._get_tf_message([transform_msg, static_transform_msg])
 
         # Getting the pointcloud
-        pointcloud_msg = self._get_pointcloud_msg(sensor_data['CameraDepth'])
+        pointcloud_start = time.time()
+        pointcloud_msg = None
+        pointcloud_msg = self._get_pointcloud_msg(
+           sensor_data['CameraDepth'], sensor_data['CameraRGB'])
+        pointcloud_end = time.time()
+        print(pointcloud_end - pointcloud_start)
 
-        # TODO: SHOULD BE GETTING THIS AS A MESSAGE
-        #self._publish_tf(measurements)
+        # TODO: SHOULD BE PASSING THIS FUNCTION THE MESSAGE
+        # self._publish_tf(measurements)
 
         # Publishing the transform
         publish_data = False
@@ -103,11 +117,21 @@ class CarlaToRos(object):
         # Writing data to a bag
         write_data_to_bag = True
         if write_data_to_bag is True:
-            self._write_data_to_bag(image_msg, depth_msg, transform_msg, tf_msg)
+            self._write_data_to_bag(
+                image_msg, depth_msg, transform_msg, tf_msg, pointcloud_msg)
 
     def shutdown(self):
         self._game.stop()
         self._bag.close()
+
+    def _get_camera_intrinsic_matrix(self):
+        # (Intrinsic) K Matrix
+        K = np.identity(3)
+        K[0, 2] = self._image_width / 2.0
+        K[1, 2] = self._image_height / 2.0
+        K[0, 0] = K[1, 1] = self._image_width / \
+            (2.0 * np.tan(self._image_fov * np.pi / 360.0))
+        return K
 
     def _get_image_msg(self, data_carla):
         # Extracts the numpy array and then converts it to a rosmessage
@@ -127,7 +151,8 @@ class CarlaToRos(object):
         orientation = self._carla_rotator_to_quaternion(transform.rotation)
         # Building the message
         transform_msg = TransformStamped()
-        transform_msg.header.stamp = rospy.get_rostime()  # Need to replace this with true timestamp
+        # Need to replace this with true timestamp
+        transform_msg.header.stamp = rospy.get_rostime()
         transform_msg.child_frame_id = "car"
         transform_msg.header.frame_id = "world"
         transform_msg.transform.translation.x = position[0]
@@ -139,9 +164,9 @@ class CarlaToRos(object):
         transform_msg.transform.rotation.w = orientation[3]
         return transform_msg
 
-    def _get_tf_message(self, transform_msg):
+    def _get_tf_message(self, transform_msgs):
         # Constructing the message
-        tf_msg = tfMessage([transform_msg])
+        tf_msg = tfMessage(transform_msgs)
         # Returning the message
         return tf_msg
 
@@ -150,25 +175,72 @@ class CarlaToRos(object):
         transform = measurements_carla.player_measurements.transform
         # Building the message
         rotator_msg = Vector3Stamped()
-        rotator_msg.header.stamp = rospy.get_rostime()  # Need to replace this with true timestamp
+        # Need to replace this with true timestamp
+        rotator_msg.header.stamp = rospy.get_rostime()
         rotator_msg.vector.x = transform.rotation.pitch
         rotator_msg.vector.y = transform.rotation.roll
         rotator_msg.vector.z = transform.rotation.yaw
         return rotator_msg
 
-    def _get_pointcloud_msg(self, data_carla):
-        # Extracts the metric depth values
+    def _get_pointcloud_msg(self, carla_depth_image, carla_rgb_image):
+        # Getting the pointcloud as a vector of 3D points
+        projecting_start_time = time.time()
+        pointcloud_vec = self._get_pointcloud_vector(
+            carla_depth_image, carla_rgb_image)
+        projecting_end_time = time.time()
+        print "projecting time: " + str(projecting_end_time - projecting_start_time)
+        # Filling out the pointcloud message
+        encoding_start_time = time.time()
+        header = Header()
+        header.stamp = rospy.get_rostime()
+        header.frame_id = "cam"
+        # fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
+        #           pc2.PointField('y', 4, pc2.PointField.FLOAT32, 1),
+        #           pc2.PointField('z', 8, pc2.PointField.FLOAT32, 1)]
+        fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
+                  pc2.PointField('y', 4, pc2.PointField.FLOAT32, 1),
+                  pc2.PointField('z', 8, pc2.PointField.FLOAT32, 1),
+                  pc2.PointField('rgba', 12, pc2.PointField.UINT32, 1)]
+                  # pc2.PointField('r', 12, pc2.PointField.UINT8, 1),
+                  # pc2.PointField('g', 13, pc2.PointField.UINT8, 1),
+                  # pc2.PointField('b', 14, pc2.PointField.UINT8, 1)]
+        pointcloud = pc2.create_cloud(header, fields, pointcloud_vec)
+        encoding_end_time = time.time()
+        print "encoding time: " + str(encoding_end_time - encoding_start_time)
+        # Creating and returning the pointcloud
+        return pointcloud
+
+    def _get_pointcloud_vector(self, carla_depth_image, carla_rgb_image):
+        # Taken and modified from:
+        # https://github.com/carla-simulator/carla/pull/100/files
+        # The length of a vector of all the pixels in the image
+        pixel_length = self._image_width * self._image_height
+        # Extracts the metric depth values to a flat vector
         far_plane_distance = 100.0
-        metic_depth_image = image_converter.depth_to_array(data_carla) * far_plane_distance
-        # Converts the depth values to points
-        metic_depth_image_shape = metic_depth_image.shape
-        print "metic_depth_image_shape: " + str(metic_depth_image_shape)
-        # Filling the pointcloud
-        for u in range(metic_depth_image_shape[0]):
-            for v in range(metic_depth_image_shape[1]):
-                z = metic_depth_image[u,v]
-                print "depth(" + str(u) + "," + str(v) + ") = " + str(z)
-                # UP TO HERE. FINISH OFF THE POINTCLOUD
+        metric_depth_vec = image_converter.depth_to_array(
+            carla_depth_image) * far_plane_distance
+        metric_depth_vec = np.reshape(metric_depth_vec, pixel_length)
+        # Gets the image space coordinates as two flat vectors
+        u_coord = repmat(np.r_[self._image_width-1:-1:-1],
+                         self._image_height, 1).reshape(pixel_length)
+        v_coord = repmat(np.c_[self._image_height-1:-1:-1],
+                         1, self._image_width).reshape(pixel_length)
+        # Homogeneous coordinates of pixels in a flattened vector ( pd2 = [u,v,1] )
+        p2d = np.array([u_coord, v_coord, np.ones_like(u_coord)])
+        # Back-projecting to 3D ( p3d = [X,Y,Z] )
+        p3d = np.dot(self._K_inv, p2d)
+        p3d *= metric_depth_vec
+        # Dealing with the color image
+        bgra_image = image_converter.to_bgra_array(carla_rgb_image).astype(np.uint32)
+        bgra_vec_packed = np.left_shift(bgra_image[:,:,3],24) + \
+                           np.left_shift(bgra_image[:,:,2],16) + \
+                           np.left_shift(bgra_image[:,:,1],8) + \
+                           np.left_shift(bgra_image[:,:,0],0)
+        bgra_vec_packed = np.reshape(bgra_vec_packed, [pixel_length,1])
+        # Combining the vectors
+        pointcloud_vec = np.concatenate((p3d.transpose(), bgra_vec_packed), axis=1)
+        # Returning
+        return pointcloud_vec
 
     # def _publish_tf(self, measurements_carla):
     #     # Printing
@@ -191,13 +263,36 @@ class CarlaToRos(object):
     #     self._tf_broadcaster.sendTransform(
     #         translation_tuple, orientation_tuple, stamp, child_frame_id, parent_frame_id)
 
-    def _write_data_to_bag(self, image_msg, depth_msg, transform_msg, tf_msg):
+    def _get_static_transform_message(self):
+        # Building the message
+        transform_msg = TransformStamped()
+        # Need to replace this with true timestamp
+        transform_msg.header.stamp = rospy.get_rostime()
+        transform_msg.child_frame_id = "cam"
+        transform_msg.header.frame_id = "car"
+        cm_to_m = 1.0 / 100.0
+        transform_msg.transform.translation.x = self._camera_position_x * cm_to_m
+        transform_msg.transform.translation.y = self._camera_position_y * cm_to_m
+        transform_msg.transform.translation.z = self._camera_position_z * cm_to_m
+        transform_msg.transform.rotation.x = 0
+        transform_msg.transform.rotation.y = 0
+        transform_msg.transform.rotation.z = 0
+        transform_msg.transform.rotation.w = 1
+        return transform_msg
+
+    def _write_data_to_bag(self, image_msg, depth_msg, transform_msg, tf_msg, pointcloud_msg):
         # Writing that shit
         try:
-            self._bag.write('image', image_msg)
-            self._bag.write('depth', depth_msg)
-            self._bag.write('transform', transform_msg)
-            self._bag.write('tf', tf_msg)
+            if image_msg is not None:
+                self._bag.write('image', image_msg)
+            if depth_msg is not None:
+                self._bag.write('depth', depth_msg)
+            if transform_msg is not None:
+                self._bag.write('transform', transform_msg)
+            if tf_msg is not None:
+                self._bag.write('tf', tf_msg)
+            if pointcloud_msg is not None:
+                self._bag.write('pointcloud', pointcloud_msg)
             #self._bag.write('rotator', rotator_msg)
         except:
             pass
@@ -236,11 +331,11 @@ class CarlaToRos(object):
         cy = np.cos(yaw)
         sy = np.sin(yaw)
         # Making the quaternion
-        qx =  cr*sp*sy - sr*cp*cy
+        qx = cr*sp*sy - sr*cp*cy
         qy = -cr*sp*cy - sr*cp*sy
-        qz =  cr*cp*sy - sr*sp*cy
-        qw =  cr*cp*cy + sr*sp*sy
-        # Creating the vector 
+        qz = cr*cp*sy - sr*sp*cy
+        qw = cr*cp*cy + sr*sp*sy
+        # Creating the vector
         return np.array([qx, qy, qz, qw])
 
     def _remove_position_offset(self, transform_msg):

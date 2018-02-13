@@ -63,12 +63,7 @@ from carla.settings import CarlaSettings
 from carla.tcp import TCPConnectionError
 from carla.util import print_over_same_line
 
-
-WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 600
-MINI_WINDOW_WIDTH = 320
-MINI_WINDOW_HEIGHT = 180
-
+from common import *
 
 def make_carla_settings():
     """Make a CarlaSettings object with the settings we need."""
@@ -83,13 +78,13 @@ def make_carla_settings():
     # Adding the RGBD image
     camera0 = sensor.Camera('CameraRGB')
     camera0.set_image_size(WINDOW_WIDTH, WINDOW_HEIGHT)
-    camera0.set_position(200, 0, 140)
+    camera0.set_position(camera_position_x, camera_position_y, camera_position_z)
     camera0.set_rotation(0.0, 0.0, 0.0)
     settings.add_sensor(camera0)
     # Adding the depth sensor
     camera1 = sensor.Camera('CameraDepth', PostProcessing='Depth')
     camera1.set_image_size(WINDOW_WIDTH, WINDOW_HEIGHT)
-    camera1.set_position(200, 0, 140)
+    camera1.set_position(camera_position_x, camera_position_y, camera_position_z)
     camera1.set_rotation(0.0, 0.0, 0.0)
     settings.add_sensor(camera1)
     # SEGMENTATION NOT NEEDED!!
