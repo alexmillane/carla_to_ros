@@ -32,6 +32,9 @@ from carla.client import make_carla_client
 from carla.tcp import TCPConnectionError
 from carla import image_converter  # Only for debug
 
+# Tools for pointcloud building
+from numpy_pc2 import array_to_pointcloud2
+
 # Importing the interactive game
 from carla_interaction import CarlaGame
 
@@ -75,7 +78,6 @@ class CarlaToRos(object):
         self._camera_position_z = camera_position_z
 
     def data_callback(self, measurements, sensor_data):
-        print "In data_callback"
 
         # Shutting down if requested
         if rospy.is_shutdown():
@@ -99,12 +101,9 @@ class CarlaToRos(object):
         tf_msg = self._get_tf_message([transform_msg, static_transform_msg])
 
         # Getting the pointcloud
-        pointcloud_start = time.time()
         pointcloud_msg = None
         pointcloud_msg = self._get_pointcloud_msg(
-           sensor_data['CameraDepth'], sensor_data['CameraRGB'])
-        pointcloud_end = time.time()
-        print(pointcloud_end - pointcloud_start)
+            sensor_data['CameraDepth'], sensor_data['CameraRGB'])
 
         # TODO: SHOULD BE PASSING THIS FUNCTION THE MESSAGE
         # self._publish_tf(measurements)
@@ -184,29 +183,28 @@ class CarlaToRos(object):
 
     def _get_pointcloud_msg(self, carla_depth_image, carla_rgb_image):
         # Getting the pointcloud as a vector of 3D points
-        projecting_start_time = time.time()
         pointcloud_vec = self._get_pointcloud_vector(
             carla_depth_image, carla_rgb_image)
-        projecting_end_time = time.time()
-        print "projecting time: " + str(projecting_end_time - projecting_start_time)
         # Filling out the pointcloud message
-        encoding_start_time = time.time()
+        # NOTE(alexmillane): Standard create cloud function works but is slow as fuck.
+        #                    I have therefore create a record array and get the bytes directly
+        #pointcloud = pc2.create_cloud(header, fields, pointcloud_vec)
         header = Header()
         header.stamp = rospy.get_rostime()
         header.frame_id = "cam"
-        # fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
-        #           pc2.PointField('y', 4, pc2.PointField.FLOAT32, 1),
-        #           pc2.PointField('z', 8, pc2.PointField.FLOAT32, 1)]
         fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
                   pc2.PointField('y', 4, pc2.PointField.FLOAT32, 1),
                   pc2.PointField('z', 8, pc2.PointField.FLOAT32, 1),
                   pc2.PointField('rgba', 12, pc2.PointField.UINT32, 1)]
-                  # pc2.PointField('r', 12, pc2.PointField.UINT8, 1),
-                  # pc2.PointField('g', 13, pc2.PointField.UINT8, 1),
-                  # pc2.PointField('b', 14, pc2.PointField.UINT8, 1)]
-        pointcloud = pc2.create_cloud(header, fields, pointcloud_vec)
-        encoding_end_time = time.time()
-        print "encoding time: " + str(encoding_end_time - encoding_start_time)
+        pointcloud = PointCloud2(header=header,
+                                 height=1,
+                                 width=len(pointcloud_vec),
+                                 is_dense=True,
+                                 is_bigendian=False,
+                                 fields=fields,
+                                 point_step=16,
+                                 row_step=16 * len(pointcloud_vec),
+                                 data=pointcloud_vec.tostring())
         # Creating and returning the pointcloud
         return pointcloud
 
@@ -229,18 +227,43 @@ class CarlaToRos(object):
         p2d = np.array([u_coord, v_coord, np.ones_like(u_coord)])
         # Back-projecting to 3D ( p3d = [X,Y,Z] )
         p3d = np.dot(self._K_inv, p2d)
-        p3d *= metric_depth_vec
-        # Dealing with the color image
-        bgra_image = image_converter.to_bgra_array(carla_rgb_image).astype(np.uint32)
-        bgra_vec_packed = np.left_shift(bgra_image[:,:,3],24) + \
-                           np.left_shift(bgra_image[:,:,2],16) + \
-                           np.left_shift(bgra_image[:,:,1],8) + \
-                           np.left_shift(bgra_image[:,:,0],0)
-        bgra_vec_packed = np.reshape(bgra_vec_packed, [pixel_length,1])
-        # Combining the vectors
-        pointcloud_vec = np.concatenate((p3d.transpose(), bgra_vec_packed), axis=1)
+        #p3d *= metric_depth_vec
+        p3d = (p3d * metric_depth_vec).astype(np.dtype('float32'))
+        # Getting the color image as a 1 array with uint8s packed into a uint32
+        bgra_image = image_converter.to_bgra_array(
+            carla_rgb_image).astype(np.uint32)
+        bgra_vec_packed = np.left_shift(bgra_image[:, :, 3], 24) + \
+            np.left_shift(bgra_image[:, :, 2], 16) + \
+            np.left_shift(bgra_image[:, :, 1], 8) + \
+            np.left_shift(bgra_image[:, :, 0], 0)
+        bgra_vec_packed = np.reshape(bgra_vec_packed, [pixel_length, 1])
+        # Packing into a record array (an array with differing types)
+        x_col, y_col, z_col = np.split(p3d.transpose(), 3, axis=1)
+        pointcloud_rec_vec = np.rec.fromarrays(
+            (x_col, y_col, z_col, bgra_vec_packed))
+        # NOTE(alexmillane) Record array byte conversion testing
+        # a = np.array([1.0, 2.0], dtype=np.float32)
+        # b = np.array([1, 2], dtype=np.uint32)
+        # print a
+        # print b
+        # records = np.rec.fromarrays((a, b))
+        # print records
+        # print [ord(char) for char in a.tostring()]
+        # print [ord(char) for char in b.tostring()]
+        # print [ord(char) for char in records.tostring()]
+        # c = np.array([1,2,3], dtype=np.uint8, ndmin=2).transpose()
+        # d = np.array([3,4,5], dtype=np.uint8, ndmin=2).transpose()
+        # e = np.concatenate((c,d), axis=1)
+        # print "c.shape: " + str(c.shape)
+        # print "d.shape: " + str(d.shape)
+        # print "e.shape: " + str(e.shape)
+        # print [ord(char) for char in c.tostring()]
+        # print [ord(char) for char in d.tostring()]
+        # print [ord(char) for char in e.tostring()]
         # Returning
-        return pointcloud_vec
+        # return pointcloud_vec
+        # return p3d.transpose()
+        return pointcloud_rec_vec
 
     # def _publish_tf(self, measurements_carla):
     #     # Printing
