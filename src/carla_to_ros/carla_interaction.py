@@ -80,12 +80,14 @@ def make_carla_settings():
     camera0.set_image_size(WINDOW_WIDTH, WINDOW_HEIGHT)
     camera0.set_position(camera_position_x, camera_position_y, camera_position_z)
     camera0.set_rotation(0.0, 0.0, 0.0)
+    camera0.set(CameraFOV=image_fov)
     settings.add_sensor(camera0)
     # Adding the depth sensor
     camera1 = sensor.Camera('CameraDepth', PostProcessing='Depth')
     camera1.set_image_size(WINDOW_WIDTH, WINDOW_HEIGHT)
     camera1.set_position(camera_position_x, camera_position_y, camera_position_z)
     camera1.set_rotation(0.0, 0.0, 0.0)
+    camera1.set(CameraFOV=image_fov)
     settings.add_sensor(camera1)
     # SEGMENTATION NOT NEEDED!!
     # camera2 = sensor.Camera('CameraSemSeg', PostProcessing='SemanticSegmentation')

@@ -79,6 +79,20 @@ class CarlaToRos(object):
 
     def data_callback(self, measurements, sensor_data):
 
+        # Controls for data writing
+        record_image = False
+        record_depth = False
+        record_transform = True
+        record_tf = True
+        record_pointcloud = True
+
+        # Default is that msgs are None
+        image_msg = None
+        depth_msg = None
+        transform_msg = None
+        static_transform_msg = None
+        pointcloud_msg = None
+
         # Shutting down if requested
         if rospy.is_shutdown():
             print "Shutting down the interface."
@@ -89,11 +103,15 @@ class CarlaToRos(object):
         timestamp = self._get_timestamp_message(measurements)
 
         # Getting the msgs from Carla data
-        image_msg = self._get_image_msg(sensor_data['CameraRGB'])
-        depth_msg = self._get_depth_msg(sensor_data['CameraDepth'])
-        transform_msg = self._get_transform_message(measurements, timestamp)
-        static_transform_msg = self._get_static_transform_message(timestamp)
-        #rotator_msg = self._get_rotator_message(measurements)
+        if record_image is True:
+            image_msg = self._get_image_msg(sensor_data['CameraRGB'])
+
+        if record_depth is True:
+            depth_msg = self._get_depth_msg(sensor_data['CameraDepth'])
+        
+        if record_transform is True:
+            transform_msg = self._get_transform_message(measurements, timestamp)
+            static_transform_msg = self._get_static_transform_message(timestamp)
 
         # Zeroing the position to be relative to the first frame
         remove_position_offset = True
@@ -101,15 +119,13 @@ class CarlaToRos(object):
             transform_msg = self._remove_position_offset(transform_msg)
 
         # Making the tf message
-        tf_msg = self._get_tf_message([transform_msg, static_transform_msg])
+        if record_tf is True:
+            tf_msg = self._get_tf_message([transform_msg, static_transform_msg])
 
         # Getting the pointcloud
-        pointcloud_msg = None
-        pointcloud_msg = self._get_pointcloud_msg(
-            sensor_data['CameraDepth'], sensor_data['CameraRGB'], timestamp)
-
-        # TODO: SHOULD BE PASSING THIS FUNCTION THE MESSAGE
-        # self._publish_tf(measurements)
+        if record_pointcloud is True:
+            pointcloud_msg = self._get_pointcloud_msg(
+                sensor_data['CameraDepth'], sensor_data['CameraRGB'], timestamp)
 
         # Publishing the transform
         publish_data = False
