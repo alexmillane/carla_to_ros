@@ -33,7 +33,7 @@ from carla.tcp import TCPConnectionError
 from carla import image_converter  # Only for debug
 
 # Tools for pointcloud building
-from numpy_pc2 import array_to_pointcloud2
+#from numpy_pc2 import array_to_pointcloud2
 
 # Importing the interactive game
 from carla_interaction import CarlaGame
@@ -85,11 +85,14 @@ class CarlaToRos(object):
             self.shutdown()
             return
 
+        # Getting the time stamp
+        timestamp = self._get_timestamp_message(measurements)
+
         # Getting the msgs from Carla data
         image_msg = self._get_image_msg(sensor_data['CameraRGB'])
         depth_msg = self._get_depth_msg(sensor_data['CameraDepth'])
-        transform_msg = self._get_transform_message(measurements)
-        static_transform_msg = self._get_static_transform_message()
+        transform_msg = self._get_transform_message(measurements, timestamp)
+        static_transform_msg = self._get_static_transform_message(timestamp)
         #rotator_msg = self._get_rotator_message(measurements)
 
         # Zeroing the position to be relative to the first frame
@@ -103,7 +106,7 @@ class CarlaToRos(object):
         # Getting the pointcloud
         pointcloud_msg = None
         pointcloud_msg = self._get_pointcloud_msg(
-            sensor_data['CameraDepth'], sensor_data['CameraRGB'])
+            sensor_data['CameraDepth'], sensor_data['CameraRGB'], timestamp)
 
         # TODO: SHOULD BE PASSING THIS FUNCTION THE MESSAGE
         # self._publish_tf(measurements)
@@ -132,6 +135,10 @@ class CarlaToRos(object):
             (2.0 * np.tan(self._image_fov * np.pi / 360.0))
         return K
 
+    def _get_timestamp_message(self, measurements_carla):
+        ms_to_s = 1/1000.0
+        return rospy.Time(measurements_carla.game_timestamp * ms_to_s)
+
     def _get_image_msg(self, data_carla):
         # Extracts the numpy array and then converts it to a rosmessage
         # print "rgb size: " + str(data_carla.data.shape)
@@ -142,7 +149,7 @@ class CarlaToRos(object):
         data_ic = image_converter.depth_to_logarithmic_grayscale(data_carla)
         return self._bridge.cv2_to_imgmsg((data_ic * (pow(2, 8) - 1)).astype(np.uint16), "rgb16")
 
-    def _get_transform_message(self, measurements_carla):
+    def _get_transform_message(self, measurements_carla, timestamp):
         # Getting the transform out of the carla data
         transform = measurements_carla.player_measurements.transform
         # Converting carla convensions to ROS convensions as numpy arrays
@@ -151,7 +158,7 @@ class CarlaToRos(object):
         # Building the message
         transform_msg = TransformStamped()
         # Need to replace this with true timestamp
-        transform_msg.header.stamp = rospy.get_rostime()
+        transform_msg.header.stamp = timestamp
         transform_msg.child_frame_id = "car"
         transform_msg.header.frame_id = "world"
         transform_msg.transform.translation.x = position[0]
@@ -169,19 +176,19 @@ class CarlaToRos(object):
         # Returning the message
         return tf_msg
 
-    def _get_rotator_message(self, measurements_carla):
+    def _get_rotator_message(self, measurements_carla, timestamp):
         # Getting the transform out of the carla data
         transform = measurements_carla.player_measurements.transform
         # Building the message
         rotator_msg = Vector3Stamped()
         # Need to replace this with true timestamp
-        rotator_msg.header.stamp = rospy.get_rostime()
+        rotator_msg.header.stamp = timestamp
         rotator_msg.vector.x = transform.rotation.pitch
         rotator_msg.vector.y = transform.rotation.roll
         rotator_msg.vector.z = transform.rotation.yaw
         return rotator_msg
 
-    def _get_pointcloud_msg(self, carla_depth_image, carla_rgb_image):
+    def _get_pointcloud_msg(self, carla_depth_image, carla_rgb_image, timestamp):
         # Getting the pointcloud as a vector of 3D points
         pointcloud_vec = self._get_pointcloud_vector(
             carla_depth_image, carla_rgb_image)
@@ -190,7 +197,7 @@ class CarlaToRos(object):
         #                    I have therefore create a record array and get the bytes directly
         #pointcloud = pc2.create_cloud(header, fields, pointcloud_vec)
         header = Header()
-        header.stamp = rospy.get_rostime()
+        header.stamp = timestamp
         header.frame_id = "cam"
         fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
                   pc2.PointField('y', 4, pc2.PointField.FLOAT32, 1),
@@ -214,7 +221,7 @@ class CarlaToRos(object):
         # The length of a vector of all the pixels in the image
         pixel_length = self._image_width * self._image_height
         # Extracts the metric depth values to a flat vector
-        far_plane_distance = 100.0
+        far_plane_distance = 1000.0
         metric_depth_vec = image_converter.depth_to_array(
             carla_depth_image) * far_plane_distance
         metric_depth_vec = np.reshape(metric_depth_vec, pixel_length)
@@ -286,21 +293,25 @@ class CarlaToRos(object):
     #     self._tf_broadcaster.sendTransform(
     #         translation_tuple, orientation_tuple, stamp, child_frame_id, parent_frame_id)
 
-    def _get_static_transform_message(self):
+    def _get_static_transform_message(self, timestamp):
         # Building the message
         transform_msg = TransformStamped()
         # Need to replace this with true timestamp
-        transform_msg.header.stamp = rospy.get_rostime()
+        transform_msg.header.stamp = timestamp
         transform_msg.child_frame_id = "cam"
         transform_msg.header.frame_id = "car"
         cm_to_m = 1.0 / 100.0
         transform_msg.transform.translation.x = self._camera_position_x * cm_to_m
         transform_msg.transform.translation.y = self._camera_position_y * cm_to_m
         transform_msg.transform.translation.z = self._camera_position_z * cm_to_m
-        transform_msg.transform.rotation.x = 0
-        transform_msg.transform.rotation.y = 0
-        transform_msg.transform.rotation.z = 0
-        transform_msg.transform.rotation.w = 1
+        # Rotating from camera x forward, z up to z forward, x left
+        #quaternion = tf.transformations.quaternion_from_euler(0.0, np.pi/2.0, -np.pi/2, axes='rxyz')
+        quaternion = tf.transformations.quaternion_from_euler(0.0, np.pi/2.0, np.pi/2, axes='rxyz')
+        #print "static quaternion: " + str(quaternion)
+        transform_msg.transform.rotation.x = quaternion[0]
+        transform_msg.transform.rotation.y = quaternion[1]
+        transform_msg.transform.rotation.z = quaternion[2]
+        transform_msg.transform.rotation.w = quaternion[3]
         return transform_msg
 
     def _write_data_to_bag(self, image_msg, depth_msg, transform_msg, tf_msg, pointcloud_msg):
