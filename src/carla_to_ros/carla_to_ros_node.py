@@ -79,9 +79,12 @@ class CarlaToRos(object):
 
     def data_callback(self, measurements, sensor_data):
 
+        # Time for datacall back timing
+        t_start = time.time()
+
         # Controls for data writing
-        record_image = False
-        record_depth = False
+        record_image = True
+        record_depth = True
         record_transform = True
         record_tf = True
         record_pointcloud = True
@@ -104,14 +107,23 @@ class CarlaToRos(object):
 
         # Getting the msgs from Carla data
         if record_image is True:
+            t_start_image = time.time()
             image_msg = self._get_image_msg(sensor_data['CameraRGB'])
+            t_end_image = time.time()
+            #print "image time: " + str(t_end_image - t_start_image)
 
         if record_depth is True:
+            t_start_depth = time.time()
             depth_msg = self._get_depth_msg(sensor_data['CameraDepth'])
+            t_end_depth = time.time()
+            #print "depth time: " + str(t_end_depth - t_start_depth)
         
         if record_transform is True:
+            t_start_transform = time.time()
             transform_msg = self._get_transform_message(measurements, timestamp)
             static_transform_msg = self._get_static_transform_message(timestamp)
+            t_end_transform = time.time()
+            #print "transform time: " + str(t_end_transform - t_start_transform)
 
         # Zeroing the position to be relative to the first frame
         remove_position_offset = True
@@ -120,12 +132,18 @@ class CarlaToRos(object):
 
         # Making the tf message
         if record_tf is True:
+            t_start_tf = time.time()
             tf_msg = self._get_tf_message([transform_msg, static_transform_msg])
+            t_end_tf = time.time()
+            #print "tf time: " + str(t_end_tf - t_start_tf)
 
         # Getting the pointcloud
         if record_pointcloud is True:
+            t_start_pointcloud = time.time()
             pointcloud_msg = self._get_pointcloud_msg(
                 sensor_data['CameraDepth'], sensor_data['CameraRGB'], timestamp)
+            t_end_pointcloud = time.time()
+            #print "pointcloud time: " + str(t_end_pointcloud - t_start_pointcloud)
 
         # Publishing the transform
         publish_data = False
@@ -135,8 +153,15 @@ class CarlaToRos(object):
         # Writing data to a bag
         write_data_to_bag = True
         if write_data_to_bag is True:
+            t_start_bag = time.time()
             self._write_data_to_bag(
                 image_msg, depth_msg, transform_msg, tf_msg, pointcloud_msg)
+            t_end_bag = time.time()
+            #print "bag write time: " + str(t_end_bag - t_start_bag)
+
+        # Time for datacall back timing
+        t_end = time.time()
+        #print "data_callback time: " + str(t_end - t_start)
 
     def shutdown(self):
         self._game.stop()
@@ -149,6 +174,8 @@ class CarlaToRos(object):
         K[1, 2] = self._image_height / 2.0
         K[0, 0] = K[1, 1] = self._image_width / \
             (2.0 * np.tan(self._image_fov * np.pi / 360.0))
+        # Printing for use outside
+        print "K: " + str(K)
         return K
 
     def _get_timestamp_message(self, measurements_carla):
@@ -158,12 +185,16 @@ class CarlaToRos(object):
     def _get_image_msg(self, data_carla):
         # Extracts the numpy array and then converts it to a rosmessage
         # print "rgb size: " + str(data_carla.data.shape)
-        return self._bridge.cv2_to_imgmsg(data_carla.data, "rgb8")
+        mono_img = cv2.cvtColor(data_carla.data, cv2.COLOR_RGB2GRAY)
+        return self._bridge.cv2_to_imgmsg(mono_img, "mono8")
 
-    def _get_depth_msg(self, data_carla):
+    def _get_depth_msg(self, carla_depth_image):
         # Extracts the numpy array and then converts it to a rosmessage
-        data_ic = image_converter.depth_to_logarithmic_grayscale(data_carla)
-        return self._bridge.cv2_to_imgmsg((data_ic * (pow(2, 8) - 1)).astype(np.uint16), "rgb16")
+        #data_ic = image_converter.depth_to_logarithmic_grayscale(carla_depth_image)
+        far_plane_distance = 1000.0
+        metric_depth = image_converter.depth_to_array(
+            carla_depth_image) * far_plane_distance
+        return self._bridge.cv2_to_imgmsg(metric_depth.astype(np.float32)) #, "rgb16"
 
     def _get_transform_message(self, measurements_carla, timestamp):
         # Getting the transform out of the carla data

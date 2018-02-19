@@ -8,9 +8,9 @@ MINI_WINDOW_HEIGHT = 180
 # Sensor defines
 image_width = WINDOW_WIDTH
 image_height = WINDOW_HEIGHT
-image_fov = 120.0 # At the moment this is not taken, I have just put the default here for use elsewhere.
+image_fov = 120.0
 
 # The camera position 
-camera_position_x = 200
+camera_position_x = 100 # 200
 camera_position_y = 0
-camera_position_z = 140
+camera_position_z = 200 # 140
