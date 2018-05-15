@@ -69,14 +69,14 @@ def make_carla_settings():
     """Make a CarlaSettings object with the settings we need."""
     settings = CarlaSettings()
     settings.set(
-        SynchronousMode=False,
+        SynchronousMode=True,
         SendNonPlayerAgentsInfo=False, #True
         NumberOfVehicles=0, #15
         NumberOfPedestrians=0, # 30
-        WeatherId=0)#random.choice([1, 3, 7, 8, 14]))
+        WeatherId=1)#random.choice([1, 3, 7, 8, 14]))
     settings.randomize_seeds()
     # Adding the RGBD image
-    camera0 = sensor.Camera('CameraRGB')
+    camera0 = sensor.Camera('CameraRGB') #, PostProcessing='None'
     camera0.set_image_size(WINDOW_WIDTH, WINDOW_HEIGHT)
     camera0.set_position(camera_position_x, camera_position_y, camera_position_z)
     camera0.set_rotation(0.0, 0.0, 0.0)
@@ -178,7 +178,11 @@ class CarlaGame(object):
 
         # Hard coding the start spot
         #player_start = np.random.randint(number_of_player_starts)
-        player_start = 1;
+        #player_start = 1
+        #player_start = 129;
+        player_start = 7;
+
+        print('PLAYER_START: ' + str(player_start))
 
         print('Starting new episode...')
         self.client.start_episode(player_start)

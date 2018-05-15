@@ -34,7 +34,7 @@ class CarlaSettings(object):
 
     def __init__(self, **kwargs):
         # [CARLA/Server]
-        self.SynchronousMode = True
+        self.SynchronousMode = False #True
         self.SendNonPlayerAgentsInfo = False
         # [CARLA/LevelSettings]
         self.PlayerVehicle = None
